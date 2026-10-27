@@ -1,0 +1,68 @@
+#VRML_SIM R2025a utf8
+
+# 所有 PROTO 已下载到项目本地 protos/ 目录（无需联网）。
+# 相对路径基于本世界文件所在的 worlds/ 目录。
+EXTERNPROTO "../protos/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "../protos/projects/robots/adept/pioneer3/protos/Pioneer3dx.proto"
+
+WorldInfo {
+  basicTimeStep 16
+  info [
+    "具身养老/社区巡检机器人仿真 - AI+公共服务赛道"
+    "控制器: webots_controller (自动发现设备 + 红色异常检测闭环)"
+  ]
+}
+
+Viewpoint {
+  fieldOfView 0.660595
+  orientation -0.1619134252008754 0.8180751224685925 0.551848835042458 0.6887354808883986
+  position -6 -4 5
+}
+
+# 纯色天空 + 平行光（零纹理依赖，替代 TexturedBackground 的动态 HDR 天空盒）
+Background {
+  skyColor [ 0.55 0.75 0.95 ]
+}
+
+DirectionalLight {
+  direction 0.4 -0.6 -0.6
+  intensity 1.2
+  ambientIntensity 0.5
+}
+
+# 社区场地（12x12 米，带矮围墙防止机器人冲出）
+RectangleArena {
+  floorSize 12 12
+  wallHeight 0.3
+}
+
+# 巡逻机器人：Pioneer3dx，控制器已绑定；
+# extensionSlot 挂载前置摄像头（默认朝向即车头正前方，与官方 Kinect 挂法一致）
+DEF PATROL_BOT Pioneer3dx {
+  translation 0 0 0.0975
+  controller "webots_controller"
+  extensionSlot [
+    Camera {
+      translation 0 0 0.2
+      width 320
+      height 240
+    }
+  ]
+}
+
+# 测试用"跌倒人员"标记（红色方块，巡逻边线内侧、斜前方可见）
+DEF FALLEN_MARKER Transform {
+  translation 1.5 0.3 0.1
+  children [
+    Shape {
+      geometry Box {
+        size 0.25 0.25 0.2
+      }
+      appearance Appearance {
+        material Material {
+          diffuseColor 0.9 0.1 0.1
+        }
+      }
+    }
+  ]
+}

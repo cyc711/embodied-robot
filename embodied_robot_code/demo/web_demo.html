@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>具身养老/社区巡检机器人 · 仿真演示</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#161d2e; --line:#243049; --txt:#e6edf6;
+    --muted:#8a98b5; --accent:#4da3ff; --warn:#ff5d5d; --ok:#3ddc97;
+    --patrol:#4da3ff; --invest:#ffb648; --alert:#ff5d5d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",system-ui,"Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--txt);padding:18px}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 14px}
+  .wrap{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+  .stage{flex:0 0 auto}
+  canvas{background:#0b1018;border:1px solid var(--line);border-radius:10px;display:block}
+  .side{flex:1 1 320px;min-width:300px;display:flex;flex-direction:column;gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  button{background:var(--accent);color:#06223d;border:none;border-radius:8px;
+    padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--txt);border:1px solid var(--line)}
+  .state{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:15px}
+  .dot{width:12px;height:12px;border-radius:50%;background:var(--patrol)}
+  .badge{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px}
+  .stats div{background:#0e1422;border:1px solid var(--line);border-radius:8px;padding:8px}
+  .stats b{color:var(--accent)}
+  .log{height:260px;overflow:auto;background:#0a0f1a;border:1px solid var(--line);
+    border-radius:8px;padding:8px;font-family:ui-monospace,"Cascadia Code",Consolas,monospace;
+    font-size:12.5px;line-height:1.55;color:#bfe0ff}
+  .log .inv{color:var(--invest)} .log .al{color:var(--alert)} .log .ev{color:var(--ok)}
+  input[type=range]{flex:1}
+  .legend{font-size:12px;color:var(--muted);line-height:1.7}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+  <h1>具身养老 / 社区巡检机器人 · 仿真演示</h1>
+  <p class="sub">感知 → 决策 → 行动 闭环（PATROL → INVESTIGATE → ALERT → PATROL）。纯前端运行，无需 Webots / 联网。录屏即可作为计划书演示视频。</p>
+
+  <div class="wrap">
+    <div class="stage">
+      <canvas id="cv" width="520" height="520"></canvas>
+    </div>
+
+    <div class="side">
+      <div class="card row" style="justify-content:space-between">
+        <div class="state"><span class="dot" id="dot"></span><span id="stateTxt">PATROL</span></div>
+        <div class="row">
+          <button id="play">▶ 开始</button>
+          <button id="reset" class="ghost">↺ 重置</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="margin-bottom:8px">
+          <span class="badge">速度</span>
+          <input type="range" id="spd" min="0.4" max="3" step="0.1" value="1.2" />
+          <span id="spdv" class="badge">1.2×</span>
+        </div>
+        <div class="stats">
+          <div>步数 <b id="stepN">0</b></div>
+          <div>累计告警 <b id="alertN">0</b></div>
+          <div>机器人坐标 <b id="posN">1.5, 1.5</b></div>
+          <div>朝向 <b id="headN">0°</b></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="legend">
+          <div><i style="background:#4da3ff"></i>蓝色方块 = 巡逻机器人（带前向摄像头视锥）</div>
+          <div><i style="background:#ff5d5d"></i>红色方块 = 跌倒/异常人员（检测目标）</div>
+          <div><i style="background:#3ddc97"></i>绿色虚线 = 巡逻路线</div>
+          <div style="margin-top:6px">橙/红高亮时为 <b>INVESTIGATE / ALERT</b> 状态</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="badge" style="margin-bottom:6px">实时日志（与 Webots Console 同源逻辑）</div>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const ARENA = 12;            // 12m x 12m
+const S = W / ARENA;         // 像素/米
+const toPx = m => m * S;
+
+// 巡逻路线（正方形，单位：米）
+const WAYPOINTS = [[1.5,1.5],[10.5,1.5],[10.5,10.5],[1.5,10.5]];
+const FALLEN = [5.0, 1.5];   // 跌倒人员，位于第一条巡逻边线附近
+
+// 仿真状态
+let robot, heading, wi, state, alerts, step, patrolling, markerActive, alertCooldown;
+function resetSim(){
+  robot = [1.5,1.5]; heading = 0; wi = 0; state = 'PATROL';
+  alerts = 0; step = 0; markerActive = true; alertCooldown = 0;
+  logEl.innerHTML = '';
+  pushLog('系统','具身巡检控制器启动：开始巡逻（编码器里程计 + 视觉异常检测）','ev');
+}
+
+// 摄像头检测：视锥内 ±35°，量程 4.5m
+const FOV = 35 * Math.PI/180, CAM_RANGE = 4.5;
+function inView(m){
+  const dx = m[0]-robot[0], dy = m[1]-robot[1];
+  const dist = Math.hypot(dx,dy);
+  if (dist > CAM_RANGE || dist < 0.0001) return {ok:dist<0.0001, dist};
+  const ang = Math.atan2(dy,dx);
+  let d = ang - heading;
+  while(d> Math.PI) d-=2*Math.PI; while(d<-Math.PI) d+=2*Math.PI;
+  return {ok: Math.abs(d) < FOV, dist};
+}
+
+function moveToward(tgt, v){
+  const dx = tgt[0]-robot[0], dy = tgt[1]-robot[1];
+  const dist = Math.hypot(dx,dy);
+  if (dist < 1e-6) return;
+  const dir = Math.atan2(dy,dx);
+  const step = Math.min(v, dist);
+  robot[0] += Math.cos(dir)*step;
+  robot[1] += Math.sin(dir)*step;
+  // 平滑转向
+  let d = dir - heading;
+  while(d> Math.PI) d-=2*Math.PI; while(d<-Math.PI) d+=2*Math.PI;
+  heading += Math.max(-0.25, Math.min(0.25, d));
+}
+
+function tick(){
+  if(!patrolling) return;
+  const v = 0.18 * speed; // 米/帧
+  if (state === 'PATROL'){
+    const tgt = WAYPOINTS[wi];
+    if (Math.hypot(tgt[0]-robot[0], tgt[1]-robot[1]) < 0.12){
+      wi = (wi+1) % WAYPOINTS.length;
+      pushLog('PATROL', `到达巡逻点，下一个目标: (${WAYPOINTS[wi][0]}, ${WAYPOINTS[wi][1]})`);
+    }
+    moveToward(WAYPOINTS[wi], v);
+    const seen = markerActive ? inView(FALLEN) : {ok:false};
+    if (seen.ok){
+      state = 'INVESTIGATE';
+      pushLog('INVESTIGATE', `发现红色异常 @ 距离 ${seen.dist.toFixed(2)}m，前往核实`, 'inv');
+    }
+  } else if (state === 'INVESTIGATE'){
+    moveToward(FALLEN, v);
+    const d = Math.hypot(FALLEN[0]-robot[0], FALLEN[1]-robot[1]);
+    if (d < 0.5){
+      state = 'ALERT'; alerts++;
+      pushLog('ALERT', `⚠ 已抵近异常并触发告警 + 语音陪护（累计告警 ${alerts} 次）`, 'al');
+      alertCooldown = 90; // 停留帧数
+    }
+  } else if (state === 'ALERT'){
+    alertCooldown--;
+    if (alertCooldown <= 0){
+      markerActive = false; state = 'PATROL';
+      pushLog('PATROL', `处置完成，恢复正常巡逻`, 'ev');
+    }
+  }
+  step++;
+  updateHUD();
+  draw();
+}
+
+function loop(){ tick(); requestAnimationFrame(loop); }
+
+// ---------- 渲染 ----------
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // 场地
+  ctx.fillStyle = '#0e1626'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle = '#1c2942'; ctx.lineWidth = 1;
+  for (let i=0;i<=ARENA;i++){
+    ctx.beginPath(); ctx.moveTo(toPx(i),0); ctx.lineTo(toPx(i),H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,toPx(i)); ctx.lineTo(W,toPx(i)); ctx.stroke();
+  }
+  // 巡逻路线
+  ctx.strokeStyle = 'rgba(61,220,151,.8)'; ctx.setLineDash([6,6]); ctx.lineWidth=2;
+  ctx.beginPath();
+  WAYPOINTS.forEach((p,i)=>{ const x=toPx(p[0]),y=toPx(p[1]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+
+  // 跌倒人员
+  if (markerActive){
+    const fx=toPx(FALLEN[0]), fy=toPx(FALLEN[1]);
+    ctx.fillStyle = '#ff5d5d'; ctx.fillRect(fx-7,fy-7,14,14);
+    ctx.strokeStyle='#ffb0b0'; ctx.strokeRect(fx-7,fy-7,14,14);
+  }
+
+  // 机器人 + 视锥
+  const rx=toPx(robot[0]), ry=toPx(robot[1]);
+  ctx.save(); ctx.translate(rx,ry); ctx.rotate(-heading);
+  // 视锥
+  ctx.fillStyle = state==='INVESTIGATE' ? 'rgba(255,182,72,.22)' : 'rgba(77,163,255,.16)';
+  ctx.beginPath(); ctx.moveTo(0,0);
+  ctx.arc(0,0, toPx(CAM_RANGE), -FOV, FOV); ctx.closePath(); ctx.fill();
+  // 本体
+  const c = state==='ALERT' ? '#ff5d5d' : state==='INVESTIGATE' ? '#ffb648' : '#4da3ff';
+  ctx.fillStyle = c; ctx.fillRect(-9,-9,18,18);
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath();
+  ctx.moveTo(0,0); ctx.lineTo(14,0); ctx.stroke(); // 朝向
+  ctx.restore();
+
+  // 状态文字
+  ctx.fillStyle = c; ctx.font='bold 13px sans-serif';
+  ctx.fillText(state, rx+12, ry-12);
+}
+
+// ---------- HUD / 日志 ----------
+const logEl = document.getElementById('log');
+function pushLog(tag, msg, cls=''){
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = `[${tag}] ${msg}`;
+  logEl.appendChild(line); logEl.scrollTop = logEl.scrollHeight;
+}
+function updateHUD(){
+  document.getElementById('dot').style.background =
+    state==='ALERT'?'var(--alert)':state==='INVESTIGATE'?'var(--invest)':'var(--patrol)';
+  document.getElementById('stateTxt').textContent = state;
+  document.getElementById('stepN').textContent = step;
+  document.getElementById('alertN').textContent = alerts;
+  document.getElementById('posN').textContent = `${robot[0].toFixed(2)}, ${robot[1].toFixed(2)}`;
+  document.getElementById('headN').textContent = `${Math.round(heading*180/Math.PI)}°`;
+}
+
+let speed = 1.2;
+document.getElementById('spd').addEventListener('input', e=>{
+  speed = parseFloat(e.target.value);
+  document.getElementById('spdv').textContent = speed.toFixed(1)+'×';
+});
+document.getElementById('play').addEventListener('click', e=>{
+  patrolling = !patrolling;
+  e.target.textContent = patrolling ? '⏸ 暂停' : '▶ 开始';
+});
+document.getElementById('reset').addEventListener('click', ()=>{
+  resetSim(); patrolling=false;
+  document.getElementById('play').textContent='▶ 开始';
+  draw();
+});
+
+resetSim(); draw();
+</script>
+</body>
+</html>
